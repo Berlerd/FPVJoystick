@@ -3,9 +3,24 @@
 #include <usbhub.h>
 #include <Usb.h>
 
-unsigned long lastTConnectionTime = 200;
-const unsigned long postTInterval = 200;
+#define PPM_OUT_PIN 9     // PPM signal output
+#define PPM_IN_PIN  2     // PPM input from RC receiver
+#define CHANNELS 8
+#define PPM_FRAME_LENGTH 22500   // Total frame length in µs
+#define PPM_PULSE_LENGTH 400     // Pulse length in µs
+#define PPM_MIN 1000
+#define PPM_MAX 2000
 
+volatile uint16_t ppmValues[CHANNELS] = {1500,1500,1500,1500,1500,1500,1500,1500};
+volatile uint16_t ppmIn[CHANNELS];
+volatile uint8_t ppmInIndex = 0;
+volatile unsigned long lastRise = 0;
+
+// -------------------------
+// Structures for Joystick
+// -------------------------
+unsigned long lastTConnectionTime = 1000;
+const unsigned long postTInterval = 1000;
 
 struct Gimbals {
   uint16_t Ail;
@@ -42,71 +57,45 @@ struct Buttons {
   uint8_t StkDn;
   uint8_t StkL;
   uint8_t StkR;
-
 };
 
 struct MyJoystick {
-  
   Gimbals gimbals;
   Buttons buttons;
-
 };
 
-
-// Extract `numBits` starting at `bitOffset` from buffer[]
+// -------------------------
+// Helper
+// -------------------------
 uint32_t extractBits(const uint8_t *buffer, uint16_t bitOffset, uint8_t numBits) {
     uint32_t value = 0;
-
     for (uint8_t i = 0; i < numBits; i++) {
         uint16_t byteIndex = (bitOffset + i) / 8;
         uint8_t  bitIndex  = (bitOffset + i) % 8;
-
         uint8_t bit = (buffer[byteIndex] >> bitIndex) & 1;
         value |= (bit << i);
     }
-
     return value;
 }
 
+// -------------------------
+// USB HID
+// -------------------------
 USB     Usb;
 USBHub  Hub(&Usb);
 
 class MyHID : public HIDUniversal {
 public:
     MyHID(USB *p) : HIDUniversal(p) {}
+    MyJoystick myJoystick;
 
 private:
     static const uint8_t MAX_REPORT_LEN = 64;
-
-    // Initialize prevReport with your starting point
-    uint8_t prevReport[MAX_REPORT_LEN] = {
-        0x00, 0x02, 0x08, 0xE0,
-        0xFF, 0xFF, 0x03, 0xF0,
-        0x3F, 0x0F, 0x04, 0x00,
-        0x01
-    };
-
+    uint8_t prevReport[MAX_REPORT_LEN] = {0};
     uint8_t persistentChanges[MAX_REPORT_LEN] = {0};
 
 public:
-
-    MyJoystick myJoystick;
-
     void ParseHIDData(USBHID *hid, bool is_rpt_id, uint8_t len, uint8_t *buf) override {
-/**        
-        Serial.print("Report (len=");
-        Serial.print(len);
-        Serial.println(") in hex:");
-
-        // Print current report in hex
-        for (uint8_t i = 0; i < len; i++) {
-            Serial.print("0x");
-            if (buf[i] < 0x10) Serial.print("0"); // leading zero
-            Serial.print(buf[i], HEX);
-            Serial.print(" ");
-        }
-        Serial.println();
-**/
         if(len == 3){
           myJoystick.gimbals.Rud = extractBits(buf, 8, 16);
         }
@@ -125,90 +114,152 @@ public:
           myJoystick.buttons.No5 = extractBits(buf, 8*10+0, 1);
           myJoystick.buttons.No6 = extractBits(buf, 8*10+1, 1);
         }
-        else{
-          Serial.print("################ERR######################################");
-
-        }
-
-/**
-        // Compute changed bits for this report
-        Serial.println("Changed bytes in this report:");
-        for (uint8_t i = 0; i < len; i++) {
-            uint8_t changed = buf[i] ^ prevReport[i];
-            if (changed) {
-                Serial.print("Byte ");
-                Serial.print(i);
-                Serial.print(": 0x");
-                if (changed < 0x10) Serial.print("0");
-                Serial.println(changed, HEX);
-            }
-
-            // Persist the change
-            persistentChanges[i] |= changed;
-        }
-
-        // Print accumulated changes
-        Serial.println("Persistent changes so far:");
-        for (uint8_t i = 0; i < len; i++) {
-            if (persistentChanges[i]) {
-                Serial.print("Byte ");
-                Serial.print(i);
-                Serial.print(": 0x");
-                if (persistentChanges[i] < 0x10) Serial.print("0");
-                Serial.println(persistentChanges[i], HEX);
-            }
-        }
-
-        // Save current report for next comparison
-        memcpy(prevReport, buf, len);
-        Serial.println("----");
-**/        
     }
 };
 
-// Create two HID instances (optional, for multiple devices)
+// -------------------------
+// Instances
+// -------------------------
 MyHID Hid1(&Usb);
 MyHID Hid2(&Usb);
 
-void setup() {
-    Serial.begin(115200);
-    Serial.println("Starting USB Host...");
+// -------------------------
+// PPM Encoder ISR
+// -------------------------
+/*
+ISR(TIMER1_COMPA_vect) {
+  static boolean state = true;
+  static uint8_t curChan = 0;
+  static uint16_t rest = 0;
 
-    if (Usb.Init() == -1) {
-        Serial.println("USB Host Shield init failed!");
-        while (1);
+  TCNT1 = 0;
+
+  if (state) {
+    digitalWrite(PPM_OUT_PIN, LOW);
+    OCR1A = PPM_PULSE_LENGTH * 2;
+    state = false;
+  } else {
+    digitalWrite(PPM_OUT_PIN, HIGH);
+    state = true;
+
+    if (curChan >= CHANNELS) {
+      curChan = 0;
+      rest = PPM_FRAME_LENGTH;
+      for (uint8_t i = 0; i < CHANNELS; i++) rest -= ppmValues[i];
+      OCR1A = rest * 2;
+    } else {
+      OCR1A = ppmValues[curChan] * 2;
+      curChan++;
     }
-    Serial.println("USB Host Shield initialized.");
+  }
+}
+**/
+ISR(TIMER1_COMPA_vect) {
+  static boolean state = true;
+  static uint8_t curChan = 0;
+  static uint16_t rest = 0;
 
-    // Set channel defaults
+  TCNT1 = 0;
 
+  if (state) {
+    // LOW pulse (always fixed length)
+    digitalWrite(PPM_OUT_PIN, LOW);
+    OCR1A = PPM_PULSE_LENGTH * 2;
+    state = false;
+  } else {
+    // HIGH phase (variable length = channel value - pulse length)
+    digitalWrite(PPM_OUT_PIN, HIGH);
+    state = true;
+
+    if (curChan >= CHANNELS) {
+      // End of frame → sync gap
+      curChan = 0;
+      rest = PPM_FRAME_LENGTH;
+      for (uint8_t i = 0; i < CHANNELS; i++) rest -= ppmValues[i];
+      OCR1A = (rest - PPM_PULSE_LENGTH) * 2;   // subtract pulse length
+    } else {
+      OCR1A = (ppmValues[curChan] - PPM_PULSE_LENGTH) * 2;  // subtract pulse
+      curChan++;
+    }
+  }
+}
+
+
+// -------------------------
+// PPM Decoder ISR
+// -------------------------
+void ppmInterrupt() {
+  unsigned long now = micros();
+  unsigned long diff = now - lastRise;
+  lastRise = now;
+
+  if (diff > 3000) {
+    ppmInIndex = 0;
+  } else {
+    if (ppmInIndex < CHANNELS) {
+      ppmIn[ppmInIndex] = diff;
+      ppmInIndex++;
+    }
+  }
+}
+
+// -------------------------
+// Setup
+// -------------------------
+void setup() {
+  Serial.begin(115200);
+  Serial.println("Starting USB Host...");
+
+  if (Usb.Init() == -1) {
+      Serial.println("USB Host Shield init failed!");
+      while (1);
+  }
+  Serial.println("USB Host Shield initialized.");
+
+  pinMode(PPM_OUT_PIN, OUTPUT);
+  digitalWrite(PPM_OUT_PIN, HIGH);
+
+  // Timer1 setup
+  cli();
+  TCCR1A = 0;
+  TCCR1B = 0;
+  OCR1A = 100;
+  TCCR1B |= (1 << WGM12);
+  TCCR1B |= (1 << CS11);
+  TIMSK1 |= (1 << OCIE1A);
+  sei();
+
+  // PPM input
+  pinMode(PPM_IN_PIN, INPUT_PULLUP);
+  attachInterrupt(digitalPinToInterrupt(PPM_IN_PIN), ppmInterrupt, RISING);
 }
 
 void loop() {
-    Usb.Task();   // Run USB stack
+  Usb.Task();
 
-	// Time once a sec
-    if (millis() - lastTConnectionTime > postTInterval) {
-        lastTConnectionTime = millis();
-        char out[130];
-        sprintf(out, "Ail:%d Ele:%d Thr:%d Rud:%d 13:%d 14:%d 15:%d 16:%d up:%d dn:%d 3:%d 4:%d 5:%d 6:%d", 
-        Hid1.myJoystick.gimbals.Ail, 
-        Hid1.myJoystick.gimbals.Ele, 
-        Hid1.myJoystick.gimbals.Thr,
-        Hid2.myJoystick.gimbals.Rud,
-        Hid1.myJoystick.buttons.No13,
-        Hid1.myJoystick.buttons.No14,
-        Hid1.myJoystick.buttons.No15,
-        Hid1.myJoystick.buttons.No16,
-        Hid1.myJoystick.buttons.ThrUp,
-        Hid1.myJoystick.buttons.ThrDn,
-        Hid1.myJoystick.buttons.No3,
-        Hid1.myJoystick.buttons.No4,
-        Hid1.myJoystick.buttons.No5,
-        Hid1.myJoystick.buttons.No6
-        );
-        Serial.println(out);
-    }
+  // Update ppmValues with joystick values
+  ppmValues[0] = map(Hid1.myJoystick.gimbals.Ail, 0, 1023, PPM_MIN, PPM_MAX);
+  ppmValues[1] = map(Hid1.myJoystick.gimbals.Ele, 0, 1023, PPM_MIN, PPM_MAX);
+  ppmValues[2] = map(Hid1.myJoystick.gimbals.Thr, 0, 1023, PPM_MIN, PPM_MAX);
+  ppmValues[3] = map(Hid2.myJoystick.gimbals.Rud, 0, 65535, PPM_MIN, PPM_MAX);
+  ppmValues[4] = Hid1.myJoystick.buttons.No13 ? PPM_MAX : PPM_MIN;
+  ppmValues[5] = Hid1.myJoystick.buttons.No14 ? PPM_MAX : PPM_MIN;
+  ppmValues[6] = map(ppmIn[6], 0, 2000, PPM_MIN, PPM_MAX);
+  ppmValues[7] = map(ppmIn[7], 0, 2000, PPM_MIN, PPM_MAX);
 
-
+  // Debug output
+  if (millis() - lastTConnectionTime > postTInterval) {
+      lastTConnectionTime = millis();
+      Serial.print("PPM OUT: ");
+      for (int i = 0; i < CHANNELS; i++) {
+        Serial.print(ppmValues[i]); Serial.print(" ");
+      }
+      /**
+      Serial.print(" | PPM IN: ");
+      for (int i = 0; i < CHANNELS; i++) {
+        Serial.print(ppmIn[i]); Serial.print(" ");
+      }
+      **/
+      Serial.println();
+  }
 }
