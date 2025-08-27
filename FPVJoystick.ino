@@ -9,9 +9,17 @@
 #define PPM_FRAME_LENGTH 22500   // Total frame length in µs
 #define PPM_PULSE_LENGTH 400     // Pulse length in µs
 #define PPM_MIN 1000
+#define PPM_MID 1500
 #define PPM_MAX 2000
 
-volatile uint16_t ppmValues[CHANNELS] = {1500,1500,1500,1500,1500,1500,1500,1500};
+#define POS_0 PPM_MIN
+#define POS_1 1200
+#define POS_2 1400
+#define POS_3 1600
+#define POS_4 1800
+#define POS_5 PPM_MAX
+
+volatile uint16_t ppmValues[CHANNELS] = {PPM_MID,PPM_MID,PPM_MID,PPM_MID,PPM_MID,PPM_MID,PPM_MID,PPM_MID};
 volatile uint16_t ppmIn[CHANNELS];
 volatile uint8_t ppmInIndex = 0;
 volatile unsigned long lastRise = 0;
@@ -64,6 +72,14 @@ struct MyJoystick {
   Buttons buttons;
 };
 
+struct MyFlight {
+  uint16_t retract;
+  uint16_t flaps;
+  uint16_t Ch5; // ret+flp
+  uint16_t Ch6; // mode
+};
+
+
 // -------------------------
 // Helper
 // -------------------------
@@ -88,6 +104,7 @@ class MyHID : public HIDUniversal {
 public:
     MyHID(USB *p) : HIDUniversal(p) {}
     MyJoystick myJoystick;
+    MyFlight myFlight= {PPM_MIN, PPM_MIN, PPM_MIN, PPM_MIN};
 
 private:
     static const uint8_t MAX_REPORT_LEN = 64;
@@ -113,6 +130,40 @@ public:
           myJoystick.buttons.No4 = extractBits(buf, 8*9+7, 1);
           myJoystick.buttons.No5 = extractBits(buf, 8*10+0, 1);
           myJoystick.buttons.No6 = extractBits(buf, 8*10+1, 1);
+
+          if(myJoystick.buttons.ThrUp)
+            myFlight.retract = PPM_MIN;
+          else if(myJoystick.buttons.ThrDn)
+            myFlight.retract = PPM_MAX;
+
+          if(myJoystick.buttons.No14)
+            myFlight.flaps = PPM_MIN; 
+          else if(myJoystick.buttons.No15)
+            myFlight.flaps = PPM_MID; 
+          else if(myJoystick.buttons.No16)
+            myFlight.flaps = PPM_MAX; 
+
+          if(myFlight.retract == PPM_MIN){
+            myFlight.flaps = PPM_MIN;
+            myFlight.Ch5 = POS_0;
+          }
+          else if(myFlight.retract == PPM_MAX && myFlight.flaps == PPM_MIN)
+            myFlight.Ch5 = POS_1;
+          else if(myFlight.retract == PPM_MAX && myFlight.flaps == PPM_MID)
+            myFlight.Ch5 = POS_2;
+          else if(myFlight.retract == PPM_MAX && myFlight.flaps == PPM_MAX)
+            myFlight.Ch5 = POS_3;
+
+          if(myJoystick.buttons.No3)
+            myFlight.Ch6 = POS_0; 
+          else if(myJoystick.buttons.No4)
+            myFlight.Ch6 = POS_1; 
+          else if(myJoystick.buttons.No5)
+            myFlight.Ch6 = POS_2; 
+          else if(myJoystick.buttons.No6)
+            myFlight.Ch6 = POS_3; 
+
+
         }
     }
 };
@@ -242,8 +293,8 @@ void loop() {
   ppmValues[1] = map(Hid1.myJoystick.gimbals.Ele, 0, 1023, PPM_MIN, PPM_MAX);
   ppmValues[2] = map(Hid1.myJoystick.gimbals.Thr, 0, 1023, PPM_MIN, PPM_MAX);
   ppmValues[3] = map(Hid2.myJoystick.gimbals.Rud, 0, 65535, PPM_MIN, PPM_MAX);
-  ppmValues[4] = Hid1.myJoystick.buttons.No13 ? PPM_MAX : PPM_MIN;
-  ppmValues[5] = Hid1.myJoystick.buttons.No14 ? PPM_MAX : PPM_MIN;
+  ppmValues[4] = Hid1.myFlight.Ch5;
+  ppmValues[5] = Hid1.myFlight.Ch6;
   ppmValues[6] = map(ppmIn[6], 0, 2000, PPM_MIN, PPM_MAX);
   ppmValues[7] = map(ppmIn[7], 0, 2000, PPM_MIN, PPM_MAX);
 
