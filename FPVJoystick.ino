@@ -30,6 +30,8 @@ volatile unsigned long lastRise = 0;
 unsigned long lastTConnectionTime = 1000;
 const unsigned long postTInterval = 1000;
 
+uint8_t lastNo7 =0;
+
 struct Gimbals {
   uint16_t Ail;
   uint16_t Ele;
@@ -77,6 +79,7 @@ struct MyFlight {
   uint16_t flaps;
   uint16_t Ch5; // ret+flp
   uint16_t Ch6; // mode
+  uint16_t RudSel;
 };
 
 
@@ -100,11 +103,12 @@ uint32_t extractBits(const uint8_t *buffer, uint16_t bitOffset, uint8_t numBits)
 USB     Usb;
 USBHub  Hub(&Usb);
 
+
 class MyHID : public HIDUniversal {
 public:
     MyHID(USB *p) : HIDUniversal(p) {}
     MyJoystick myJoystick;
-    MyFlight myFlight= {PPM_MIN, PPM_MIN, PPM_MIN, PPM_MIN};
+    MyFlight myFlight= {PPM_MIN, PPM_MIN, PPM_MIN, PPM_MIN, 0};
 
 private:
     static const uint8_t MAX_REPORT_LEN = 64;
@@ -113,12 +117,44 @@ private:
 
 public:
     void ParseHIDData(USBHID *hid, bool is_rpt_id, uint8_t len, uint8_t *buf) override {
+        /**
+        Serial.print("HID buf [len=");
+        Serial.print(len);
+        Serial.print("]: ");
+        for (uint8_t i = 0; i < len; i++) {
+            if (buf[i] < 0x10) Serial.print("0");  // leading zero
+            Serial.print(buf[i], HEX);
+            Serial.print(" ");
+        }
+        Serial.println();
+        **/
+        /**
+        static uint8_t prevBuf[32];   // adjust size if HID report > 32
+        static bool firstRun = true;
+        for (uint8_t i = 0; i < len; i++) {
+          uint8_t diff = buf[i] ^ prevBuf[i];   // bits that changed
+          if (diff != 0) {
+            for (uint8_t b = 0; b < 8; b++) {
+                if (diff & (1 << b)) {
+                    Serial.print("  Byte ");
+                    Serial.print(i);
+                    Serial.print(" Bit ");
+                    Serial.print(b);
+                    Serial.print(" -> ");
+                    Serial.println((buf[i] >> b) & 1);
+                }
+            }
+          }
+        } 
+        **/
+
         if(len == 3){
           myJoystick.gimbals.Rud = extractBits(buf, 8, 16);
         }
         else if(len == 13){
           myJoystick.gimbals.Ail = extractBits(buf, 8*0+0, 10);
           myJoystick.gimbals.Ele = extractBits(buf, 8*1+2, 10);
+          myJoystick.gimbals.StkRud = extractBits(buf, 8*2+4, 10);
           myJoystick.gimbals.Thr = extractBits(buf, 8*3+6, 10);
           myJoystick.buttons.No13 = extractBits(buf, 8*11+0, 1);
           myJoystick.buttons.No14 = extractBits(buf, 8*11+1, 1);
@@ -130,6 +166,7 @@ public:
           myJoystick.buttons.No4 = extractBits(buf, 8*9+7, 1);
           myJoystick.buttons.No5 = extractBits(buf, 8*10+0, 1);
           myJoystick.buttons.No6 = extractBits(buf, 8*10+1, 1);
+          myJoystick.buttons.No7 = extractBits(buf, 8*10+2, 1);
 
           if(myJoystick.buttons.ThrUp)
             myFlight.retract = PPM_MIN;
@@ -163,7 +200,16 @@ public:
           else if(myJoystick.buttons.No6)
             myFlight.Ch6 = POS_3; 
 
-
+          if(myJoystick.buttons.No7 != lastNo7){
+            lastNo7 = myJoystick.buttons.No7;
+            // switch toggled 
+            if(myJoystick.buttons.No7)
+              if(myFlight.RudSel)
+                myFlight.RudSel = 0;
+              else
+                myFlight.RudSel = 1;
+          }
+          
         }
     }
 };
@@ -292,7 +338,10 @@ void loop() {
   ppmValues[0] = map(Hid1.myJoystick.gimbals.Ail, 0, 1023, PPM_MIN, PPM_MAX);
   ppmValues[1] = map(Hid1.myJoystick.gimbals.Ele, 0, 1023, PPM_MIN, PPM_MAX);
   ppmValues[2] = map(Hid1.myJoystick.gimbals.Thr, 0, 1023, PPM_MIN, PPM_MAX);
-  ppmValues[3] = map(Hid2.myJoystick.gimbals.Rud, 0, 65535, PPM_MIN, PPM_MAX);
+  if(Hid1.myFlight.RudSel == 0)
+    ppmValues[3] = map(Hid2.myJoystick.gimbals.Rud, 0, 32704, PPM_MIN, PPM_MAX);
+  else
+    ppmValues[3] = map(Hid1.myJoystick.gimbals.StkRud, 0, 1024, PPM_MIN, PPM_MAX);
   ppmValues[4] = Hid1.myFlight.Ch5;
   ppmValues[5] = Hid1.myFlight.Ch6;
   ppmValues[6] = map(ppmIn[6], 0, 2000, PPM_MIN, PPM_MAX);
@@ -305,6 +354,11 @@ void loop() {
       for (int i = 0; i < CHANNELS; i++) {
         Serial.print(ppmValues[i]); Serial.print(" ");
       }
+      /**
+      Serial.print(Hid2.myJoystick.gimbals.Rud); Serial.print(" ");
+      Serial.print(Hid1.myJoystick.gimbals.StkRud);  Serial.print(" "); 
+      Serial.print(Hid1.myFlight.RudSel); Serial.print(" "); 
+      **/
       /**
       Serial.print(" | PPM IN: ");
       for (int i = 0; i < CHANNELS; i++) {
