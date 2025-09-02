@@ -344,8 +344,8 @@ void loop() {
     ppmValues[3] = map(Hid1.myJoystick.gimbals.StkRud, 0, 1024, PPM_MIN, PPM_MAX);
   ppmValues[4] = Hid1.myFlight.Ch5;
   ppmValues[5] = Hid1.myFlight.Ch6;
-  ppmValues[6] = map(ppmIn[6], 0, 2000, PPM_MIN, PPM_MAX);
-  ppmValues[7] = map(ppmIn[7], 0, 2000, PPM_MIN, PPM_MAX);
+  ppmValues[6] = ppmIn[6]; //map(ppmIn[6], 0, 2000, PPM_MIN, PPM_MAX);
+  ppmValues[7] = ppmIn[7]; //map(ppmIn[7], 0, 2000, PPM_MIN, PPM_MAX);
 
   // Debug output
   if (millis() - lastTConnectionTime > postTInterval) {
@@ -354,6 +354,10 @@ void loop() {
       for (int i = 0; i < CHANNELS; i++) {
         Serial.print(ppmValues[i]); Serial.print(" ");
       }
+
+      //Serial.print(ppmIn[6]); Serial.print(" ");
+      //Serial.print(ppmIn[7]); Serial.print(" ");
+
       /**
       Serial.print(Hid2.myJoystick.gimbals.Rud); Serial.print(" ");
       Serial.print(Hid1.myJoystick.gimbals.StkRud);  Serial.print(" "); 
