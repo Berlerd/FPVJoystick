@@ -33,40 +33,40 @@ const unsigned long postTInterval = 1000;
 uint8_t lastNo7 =0;
 
 struct Gimbals {
-  uint16_t Ail;
-  uint16_t Ele;
-  uint16_t Thr;
-  uint16_t Rud;
-  uint16_t StkThr;
-  uint16_t StkRud;
-  uint16_t ThrTop;
-  uint16_t ThrSide;
+  uint16_t Ail = 1500;
+  uint16_t Ele = 1500;
+  uint16_t Thr = 1500;
+  uint16_t Rud = 1500;
+  uint16_t StkThr = 1500;
+  uint16_t StkRud = 1500;
+  uint16_t ThrTop = 1500;
+  uint16_t ThrSide = 1500;
 };
 
 struct Buttons {
-  uint8_t No1;
-  uint8_t No2;
-  uint8_t No3;
-  uint8_t No4;
-  uint8_t No5;
-  uint8_t No6;
-  uint8_t No7;
-  uint8_t No8;
-  uint8_t No9;
-  uint8_t No10;
-  uint8_t No11;
-  uint8_t No12;
-  uint8_t No13;
-  uint8_t No14;
-  uint8_t No15;
-  uint8_t No16;
-  uint8_t ThrDn;
-  uint8_t ThrUp;
-  uint8_t ThrPos;
-  uint8_t StkUp;
-  uint8_t StkDn;
-  uint8_t StkL;
-  uint8_t StkR;
+  uint8_t No1 = 0;
+  uint8_t No2 = 0;
+  uint8_t No3 = 0;
+  uint8_t No4 = 0;
+  uint8_t No5 = 0;
+  uint8_t No6 = 0;
+  uint8_t No7 = 0;
+  uint8_t No8 = 0;
+  uint8_t No9 = 0;
+  uint8_t No10 = 0;
+  uint8_t No11 = 0;
+  uint8_t No12 = 0;
+  uint8_t No13 = 0;
+  uint8_t No14 = 0;
+  uint8_t No15 = 0;
+  uint8_t No16 = 0;
+  uint8_t ThrDn = 0;
+  uint8_t ThrUp = 0;
+  uint8_t ThrPos = 0;
+  uint8_t StkUp = 0;
+  uint8_t StkDn = 0;
+  uint8_t StkL = 0;
+  uint8_t StkR = 0;
 };
 
 struct MyJoystick {
@@ -75,11 +75,11 @@ struct MyJoystick {
 };
 
 struct MyFlight {
-  uint16_t retract;
-  uint16_t flaps;
-  uint16_t Ch5; // ret+flp
-  uint16_t Ch6; // mode
-  uint16_t RudSel;
+  uint16_t retract = 1000;
+  uint16_t flaps   = 0;
+  uint16_t Ch5     = 1000; // ret+flp
+  uint16_t Ch6     = 1000; // flight mode
+  uint16_t RudSel  = 0;
 };
 
 
@@ -108,7 +108,7 @@ class MyHID : public HIDUniversal {
 public:
     MyHID(USB *p) : HIDUniversal(p) {}
     MyJoystick myJoystick;
-    MyFlight myFlight= {PPM_MIN, PPM_MIN, PPM_MIN, PPM_MIN, 0};
+    MyFlight myFlight;
 
 private:
     static const uint8_t MAX_REPORT_LEN = 64;
@@ -170,26 +170,31 @@ public:
 
           if(myJoystick.buttons.ThrUp)
             myFlight.retract = PPM_MIN;
-          else if(myJoystick.buttons.ThrDn)
-            myFlight.retract = PPM_MAX;
+          else if((myJoystick.buttons.ThrDn))
+            myFlight.retract = POS_3; //PPM_MAX;
 
           if(myJoystick.buttons.No14)
-            myFlight.flaps = PPM_MIN; 
+            myFlight.flaps = 0; //PPM_MIN; 
           else if(myJoystick.buttons.No15)
-            myFlight.flaps = PPM_MID; 
+            myFlight.flaps = 200; //PPM_MID; 
           else if(myJoystick.buttons.No16)
-            myFlight.flaps = PPM_MAX; 
+            myFlight.flaps = 400; //PPM_MAX;
 
+
+          myFlight.Ch5 = myFlight.retract + myFlight.flaps;
+          /**
           if(myFlight.retract == PPM_MIN){
             myFlight.flaps = PPM_MIN;
             myFlight.Ch5 = POS_0;
           }
+          
           else if(myFlight.retract == PPM_MAX && myFlight.flaps == PPM_MIN)
             myFlight.Ch5 = POS_1;
           else if(myFlight.retract == PPM_MAX && myFlight.flaps == PPM_MID)
             myFlight.Ch5 = POS_2;
           else if(myFlight.retract == PPM_MAX && myFlight.flaps == PPM_MAX)
             myFlight.Ch5 = POS_3;
+          **/
 
           if(myJoystick.buttons.No3)
             myFlight.Ch6 = POS_0; 
@@ -305,6 +310,7 @@ void ppmInterrupt() {
 // -------------------------
 void setup() {
   Serial.begin(115200);
+  Serial.println("FPVJoy Ver 1.0");
   Serial.println("Starting USB Host...");
 
   if (Usb.Init() == -1) {
@@ -337,7 +343,8 @@ void loop() {
   // Update ppmValues with joystick values
   ppmValues[0] = map(Hid1.myJoystick.gimbals.Ail, 0, 1023, PPM_MIN, PPM_MAX);
   ppmValues[1] = map(Hid1.myJoystick.gimbals.Ele, 0, 1023, PPM_MIN, PPM_MAX);
-  ppmValues[2] = map(Hid1.myJoystick.gimbals.Thr, 0, 1023, PPM_MIN, PPM_MAX);
+  ppmValues[2] = map(Hid1.myJoystick.gimbals.Thr, 0, 1023, PPM_MAX, PPM_MIN);
+
   if(Hid1.myFlight.RudSel == 0)
     ppmValues[3] = map(Hid2.myJoystick.gimbals.Rud, 0, 32704, PPM_MIN, PPM_MAX);
   else
