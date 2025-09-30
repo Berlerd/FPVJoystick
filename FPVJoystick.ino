@@ -31,6 +31,9 @@ unsigned long lastTConnectionTime = 1000;
 const unsigned long postTInterval = 1000;
 
 uint8_t lastNo7 =0;
+uint8_t lastNo13 =0;
+uint16_t lastppmIn6 = 0;
+uint16_t lastppmIn7 = 0;
 
 struct Gimbals {
   uint16_t Ail = 1500;
@@ -80,6 +83,7 @@ struct MyFlight {
   uint16_t Ch5     = 1000; // ret+flp
   uint16_t Ch6     = 1000; // flight mode
   uint16_t RudSel  = 0;
+  uint16_t HTSel   = 0;
 };
 
 
@@ -214,7 +218,18 @@ public:
               else
                 myFlight.RudSel = 1;
           }
-          
+
+          if(myJoystick.buttons.No13 != lastNo13){
+            lastNo13 = myJoystick.buttons.No13;
+            // switch toggled 
+            if(myJoystick.buttons.No13)
+              if(myFlight.HTSel)
+                myFlight.HTSel = 0;
+              else
+                myFlight.HTSel = 1;
+          }
+
+
         }
     }
 };
@@ -310,7 +325,7 @@ void ppmInterrupt() {
 // -------------------------
 void setup() {
   Serial.begin(115200);
-  Serial.println("FPVJoy Ver 1.0");
+  Serial.println("FPVJoy Ver 1.1");
   Serial.println("Starting USB Host...");
 
   if (Usb.Init() == -1) {
@@ -351,8 +366,18 @@ void loop() {
     ppmValues[3] = map(Hid1.myJoystick.gimbals.StkRud, 0, 1024, PPM_MIN, PPM_MAX);
   ppmValues[4] = Hid1.myFlight.Ch5;
   ppmValues[5] = Hid1.myFlight.Ch6;
-  ppmValues[6] = ppmIn[6]; //map(ppmIn[6], 0, 2000, PPM_MIN, PPM_MAX);
-  ppmValues[7] = ppmIn[7]; //map(ppmIn[7], 0, 2000, PPM_MIN, PPM_MAX);
+  if(Hid1.myFlight.HTSel == 0){
+    ppmValues[6] = ppmIn[6]; //map(ppmIn[6], 0, 2000, PPM_MIN, PPM_MAX);
+    ppmValues[7] = ppmIn[7]; //map(ppmIn[7], 0, 2000, PPM_MIN, PPM_MAX);
+  }
+  else{
+    if(lastppmIn6 == 0) {
+      lastppmIn6 = ppmIn[6];
+      lastppmIn7 = ppmIn[7];
+    }
+    ppmValues[6] = lastppmIn6; //ppmIn[6]; //map(ppmIn[6], 0, 2000, PPM_MIN, PPM_MAX);
+    ppmValues[7] = lastppmIn7; //ppmIn[7]; //map(ppmIn[7], 0, 2000, PPM_MIN, PPM_MAX);
+  }
 
   // Debug output
   if (millis() - lastTConnectionTime > postTInterval) {
