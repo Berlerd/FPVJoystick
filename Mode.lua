@@ -43,21 +43,30 @@ local function mapSwitch(value)
     end
 end
 
--- Function to scale Trainer values to nearest step
+-- Function to snap Trainer value to the nearest step (no math.abs)
 local function mapTrainer(val)
-    if val >= TRAINER_MIN and val <= TRAINER_LOW then return TRAINER_MIN end
-    if val >= TRAINER_LOW+1 and val <= TRAINER_MIDLOW then return TRAINER_LOW end
-    if val >= TRAINER_MIDLOW+1 and val <= TRAINER_MIDHIGH then return TRAINER_MIDLOW end
-    if val >= TRAINER_MIDHIGH+1 and val <= TRAINER_HIGH then return TRAINER_MIDHIGH end
-    if val >= TRAINER_HIGH+1 and val <= TRAINER_MAX then return TRAINER_HIGH end
-    if val >= TRAINER_MAX then return TRAINER_MAX end
-    return 0
+    local steps = { TRAINER_MIN, TRAINER_LOW, TRAINER_MIDLOW, TRAINER_MIDHIGH, TRAINER_HIGH, TRAINER_MAX }
+    local nearest = steps[1]
+    local diff = val - steps[1]
+    if diff < 0 then diff = -diff end
+    local minDiff = diff
+
+    for i = 2, #steps do
+        diff = val - steps[i]
+        if diff < 0 then diff = -diff end
+        if diff < minDiff then
+            minDiff = diff
+            nearest = steps[i]
+        end
+    end
+
+    return nearest
 end
 
 local function init()
-  print("Lua script initialized")
+  print("Lua script initialized")                         
 end
-
+    
 local function run(Mode, Trainer, SMode1 , SMode2 , Interval)
   local v1 = V1_MIN
   local v2 = V1_MIN
