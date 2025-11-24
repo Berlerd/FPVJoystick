@@ -3,7 +3,7 @@
 #include <usbhub.h>
 #include <Usb.h>
 
-#define PPM_OUT_PIN 9     // PPM signal output
+#define PPM_OUT_PIN 3     // PPM signal output
 #define PPM_IN_PIN  2     // PPM input from RC receiver
 #define CHANNELS 8
 #define PPM_FRAME_LENGTH 22500   // Total frame length in µs
@@ -34,6 +34,8 @@ uint8_t lastNo7 =0;
 uint8_t lastNo13 =0;
 uint16_t lastppmIn6 = 0;
 uint16_t lastppmIn7 = 0;
+
+uint8_t USBUpadteFalg = 0;
 
 struct Gimbals {
   uint16_t Ail = 1500;
@@ -154,6 +156,7 @@ public:
 
         if(len == 3){
           myJoystick.gimbals.Rud = extractBits(buf, 8, 16);
+          USBUpadteFalg = 1;
         }
         else if(len == 13){
           myJoystick.gimbals.Ail = extractBits(buf, 8*0+0, 10);
@@ -228,7 +231,7 @@ public:
               else
                 myFlight.HTSel = 1;
           }
-
+          USBUpadteFalg = 1;
 
         }
     }
@@ -320,6 +323,13 @@ void ppmInterrupt() {
   }
 }
 
+uint16_t clampPPM(int32_t val) {
+    if (val < PPM_MIN) return PPM_MIN;
+    if (val > PPM_MAX) return PPM_MAX;
+    return val;
+}
+
+
 // -------------------------
 // Setup
 // -------------------------
@@ -354,29 +364,31 @@ void setup() {
 
 void loop() {
   Usb.Task();
+  if(USBUpadteFalg = 1){
+    // Update ppmValues with joystick values
+    ppmValues[0] = clampPPM(map(Hid1.myJoystick.gimbals.Ail, 0, 1023, PPM_MIN, PPM_MAX));
+    ppmValues[1] = clampPPM(map(Hid1.myJoystick.gimbals.Ele, 0, 1023, PPM_MIN, PPM_MAX));
+    ppmValues[2] = clampPPM(map(Hid1.myJoystick.gimbals.Thr, 0, 1023, PPM_MAX, PPM_MIN));
 
-  // Update ppmValues with joystick values
-  ppmValues[0] = map(Hid1.myJoystick.gimbals.Ail, 0, 1023, PPM_MIN, PPM_MAX);
-  ppmValues[1] = map(Hid1.myJoystick.gimbals.Ele, 0, 1023, PPM_MIN, PPM_MAX);
-  ppmValues[2] = map(Hid1.myJoystick.gimbals.Thr, 0, 1023, PPM_MAX, PPM_MIN);
-
-  if(Hid1.myFlight.RudSel == 0)
-    ppmValues[3] = map(Hid2.myJoystick.gimbals.Rud, 0, 32704, PPM_MIN, PPM_MAX);
-  else
-    ppmValues[3] = map(Hid1.myJoystick.gimbals.StkRud, 0, 1024, PPM_MIN, PPM_MAX);
-  ppmValues[4] = Hid1.myFlight.Ch5;
-  ppmValues[5] = Hid1.myFlight.Ch6;
-  if(Hid1.myFlight.HTSel == 0){
-    ppmValues[6] = ppmIn[6]; //map(ppmIn[6], 0, 2000, PPM_MIN, PPM_MAX);
-    ppmValues[7] = ppmIn[7]; //map(ppmIn[7], 0, 2000, PPM_MIN, PPM_MAX);
-  }
-  else{
-    if(lastppmIn6 == 0) {
-      lastppmIn6 = ppmIn[6];
-      lastppmIn7 = ppmIn[7];
+    if(Hid1.myFlight.RudSel == 0)
+      ppmValues[3] = clampPPM(map(Hid2.myJoystick.gimbals.Rud, 0, 32704, PPM_MIN, PPM_MAX));
+    else
+      ppmValues[3] = clampPPM(map(Hid1.myJoystick.gimbals.StkRud, 0, 1024, PPM_MIN, PPM_MAX));
+    ppmValues[4] = clampPPM(Hid1.myFlight.Ch5);
+    ppmValues[5] = clampPPM(Hid1.myFlight.Ch6);
+    if(Hid1.myFlight.HTSel == 0){
+      ppmValues[6] = clampPPM(ppmIn[6]); //map(ppmIn[6], 0, 2000, PPM_MIN, PPM_MAX);
+      ppmValues[7] = clampPPM(ppmIn[7]); //map(ppmIn[7], 0, 2000, PPM_MIN, PPM_MAX);
     }
-    ppmValues[6] = lastppmIn6; //ppmIn[6]; //map(ppmIn[6], 0, 2000, PPM_MIN, PPM_MAX);
-    ppmValues[7] = lastppmIn7; //ppmIn[7]; //map(ppmIn[7], 0, 2000, PPM_MIN, PPM_MAX);
+    else{
+      if(lastppmIn6 == 0) {
+        lastppmIn6 = clampPPM(ppmIn[6]);
+        lastppmIn7 = clampPPM(ppmIn[7]);
+      }
+      ppmValues[6] = lastppmIn6; //ppmIn[6]; //map(ppmIn[6], 0, 2000, PPM_MIN, PPM_MAX);
+      ppmValues[7] = lastppmIn7; //ppmIn[7]; //map(ppmIn[7], 0, 2000, PPM_MIN, PPM_MAX);
+    }
+    USBUpadteFalg = 0;
   }
 
   // Debug output
