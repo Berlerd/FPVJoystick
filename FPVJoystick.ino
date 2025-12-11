@@ -394,9 +394,12 @@ void loop() {
   // Debug output
   if (millis() - lastTConnectionTime > postTInterval) {
       lastTConnectionTime = millis();
+      //digitalWrite(LED_BUILTIN, HIGH);
       Serial.print("PPM OUT: ");
       for (int i = 0; i < CHANNELS; i++) {
         Serial.print(ppmValues[i]); Serial.print(" ");
+        //if(ppmValues[i] == PPM_MAX)
+          //digitalWrite(LED_BUILTIN, LOW);
       }
 
       //Serial.print(ppmIn[6]); Serial.print(" ");
