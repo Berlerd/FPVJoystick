@@ -8,6 +8,9 @@
 #define CHANNELS 8
 #define PPM_FRAME_LENGTH 22500   // Total frame length in µs
 #define PPM_PULSE_LENGTH 400     // Pulse length in µs
+#define PPM_SYNC_US 3000
+#define PPM_GAP_US  300
+
 #define PPM_MIN 1000
 #define PPM_MID 1500
 #define PPM_MAX 2000
@@ -21,6 +24,7 @@
 
 volatile uint16_t ppmValues[CHANNELS] = {PPM_MID,PPM_MID,PPM_MID,PPM_MID,PPM_MID,PPM_MID,PPM_MID,PPM_MID};
 volatile uint16_t ppmIn[CHANNELS];
+volatile uint16_t ppmInDbg[CHANNELS];
 volatile uint8_t ppmInIndex = 0;
 volatile unsigned long lastRise = 0;
 
@@ -34,8 +38,6 @@ uint8_t lastNo7 =0;
 uint8_t lastNo13 =0;
 uint16_t lastppmIn6 = 0;
 uint16_t lastppmIn7 = 0;
-
-uint8_t USBUpadteFalg = 0;
 
 struct Gimbals {
   uint16_t Ail = 1500;
@@ -156,7 +158,6 @@ public:
 
         if(len == 3){
           myJoystick.gimbals.Rud = extractBits(buf, 8, 16);
-          USBUpadteFalg = 1;
         }
         else if(len == 13){
           myJoystick.gimbals.Ail = extractBits(buf, 8*0+0, 10);
@@ -231,7 +232,7 @@ public:
               else
                 myFlight.HTSel = 1;
           }
-          USBUpadteFalg = 1;
+
 
         }
     }
@@ -313,22 +314,24 @@ void ppmInterrupt() {
   unsigned long diff = now - lastRise;
   lastRise = now;
 
-  if (diff > 3000) {
+  if (diff > PPM_SYNC_US) {
+    //ppmInDbg[4] = ppmInIndex;
     ppmInIndex = 0;
-  } else {
+  } 
+  else if (diff > 1000 && diff < 2500) {
     if (ppmInIndex < CHANNELS) {
-      ppmIn[ppmInIndex] = diff;
+      //ppmInDbg[0]++;
+      //if(ppmInIndex == 6) ppmInDbg[1]++;
+      //if(ppmInIndex == 7) ppmInDbg[2]++;      
+      ppmIn[ppmInIndex] = diff - PPM_GAP_US;
       ppmInIndex++;
     }
-  }
+    //else
+      //ppmInDbg[5]++;
+  }  
+  //else
+    //ppmInDbg[3]++;
 }
-
-uint16_t clampPPM(int32_t val) {
-    if (val < PPM_MIN) return PPM_MIN;
-    if (val > PPM_MAX) return PPM_MAX;
-    return val;
-}
-
 
 // -------------------------
 // Setup
@@ -364,56 +367,44 @@ void setup() {
 
 void loop() {
   Usb.Task();
-  if(USBUpadteFalg = 1){
-    // Update ppmValues with joystick values
-    ppmValues[0] = clampPPM(map(Hid1.myJoystick.gimbals.Ail, 0, 1023, PPM_MIN, PPM_MAX));
-    ppmValues[1] = clampPPM(map(Hid1.myJoystick.gimbals.Ele, 0, 1023, PPM_MIN, PPM_MAX));
-    ppmValues[2] = clampPPM(map(Hid1.myJoystick.gimbals.Thr, 0, 1023, PPM_MAX, PPM_MIN));
 
-    if(Hid1.myFlight.RudSel == 0)
-      ppmValues[3] = clampPPM(map(Hid2.myJoystick.gimbals.Rud, 0, 32704, PPM_MIN, PPM_MAX));
-    else
-      ppmValues[3] = clampPPM(map(Hid1.myJoystick.gimbals.StkRud, 0, 1024, PPM_MIN, PPM_MAX));
-    ppmValues[4] = clampPPM(Hid1.myFlight.Ch5);
-    ppmValues[5] = clampPPM(Hid1.myFlight.Ch6);
-    if(Hid1.myFlight.HTSel == 0){
-      ppmValues[6] = clampPPM(ppmIn[6]); //map(ppmIn[6], 0, 2000, PPM_MIN, PPM_MAX);
-      ppmValues[7] = clampPPM(ppmIn[7]); //map(ppmIn[7], 0, 2000, PPM_MIN, PPM_MAX);
+  // Update ppmValues with joystick values
+  ppmValues[0] = map(Hid1.myJoystick.gimbals.Ail, 0, 1023, PPM_MIN, PPM_MAX);
+  ppmValues[1] = map(Hid1.myJoystick.gimbals.Ele, 0, 1023, PPM_MIN, PPM_MAX);
+  ppmValues[2] = map(Hid1.myJoystick.gimbals.Thr, 0, 1023, PPM_MAX, PPM_MIN);
+
+  if(Hid1.myFlight.RudSel == 0)
+    ppmValues[3] = map(Hid2.myJoystick.gimbals.Rud, 0, 32704, PPM_MIN, PPM_MAX);
+  else
+    ppmValues[3] = map(Hid1.myJoystick.gimbals.StkRud, 0, 1024, PPM_MIN, PPM_MAX);
+  ppmValues[4] = Hid1.myFlight.Ch5;
+  ppmValues[5] = Hid1.myFlight.Ch6;
+  if(Hid1.myFlight.HTSel == 0){
+    ppmValues[6] = ppmIn[6]; //map(ppmIn[6], 0, 2000, PPM_MIN, PPM_MAX);
+    ppmValues[7] = ppmIn[7]; //map(ppmIn[7], 0, 2000, PPM_MIN, PPM_MAX);
+  }
+  else{
+    if(lastppmIn6 == 0) {
+      lastppmIn6 = ppmIn[6];
+      lastppmIn7 = ppmIn[7];
     }
-    else{
-      if(lastppmIn6 == 0) {
-        lastppmIn6 = clampPPM(ppmIn[6]);
-        lastppmIn7 = clampPPM(ppmIn[7]);
-      }
-      ppmValues[6] = lastppmIn6; //ppmIn[6]; //map(ppmIn[6], 0, 2000, PPM_MIN, PPM_MAX);
-      ppmValues[7] = lastppmIn7; //ppmIn[7]; //map(ppmIn[7], 0, 2000, PPM_MIN, PPM_MAX);
-    }
-    USBUpadteFalg = 0;
+    ppmValues[6] = lastppmIn6; //ppmIn[6]; //map(ppmIn[6], 0, 2000, PPM_MIN, PPM_MAX);
+    ppmValues[7] = lastppmIn7; //ppmIn[7]; //map(ppmIn[7], 0, 2000, PPM_MIN, PPM_MAX);
   }
 
   // Debug output
   if (millis() - lastTConnectionTime > postTInterval) {
       lastTConnectionTime = millis();
-      //digitalWrite(LED_BUILTIN, HIGH);
+      
       Serial.print("PPM OUT: ");
       for (int i = 0; i < CHANNELS; i++) {
         Serial.print(ppmValues[i]); Serial.print(" ");
-        //if(ppmValues[i] == PPM_MAX)
-          //digitalWrite(LED_BUILTIN, LOW);
       }
-
-      //Serial.print(ppmIn[6]); Serial.print(" ");
-      //Serial.print(ppmIn[7]); Serial.print(" ");
-
-      /**
-      Serial.print(Hid2.myJoystick.gimbals.Rud); Serial.print(" ");
-      Serial.print(Hid1.myJoystick.gimbals.StkRud);  Serial.print(" "); 
-      Serial.print(Hid1.myFlight.RudSel); Serial.print(" "); 
-      **/
+      
       /**
       Serial.print(" | PPM IN: ");
       for (int i = 0; i < CHANNELS; i++) {
-        Serial.print(ppmIn[i]); Serial.print(" ");
+        Serial.print(ppmInDbg[i]); Serial.print(" ");
       }
       **/
       Serial.println();
