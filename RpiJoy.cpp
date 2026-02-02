@@ -7,6 +7,7 @@
 #include <fstream>
 #include <string>
 #include <cstring>
+#include <sys/stat.h>
 #include "rcdrivers/SBUS.h"
 
 using std::cout;
@@ -28,10 +29,6 @@ using std::chrono::milliseconds;
 #define STICK_BTN_GEAR_DOWN 16
 #define STICK_BTN_GEAR_UP   17
 
-// LED paths
-#define LED_TRIGGER_PATH "/sys/class/leds/ACT/trigger"
-#define LED_BRIGHTNESS_PATH "/sys/class/leds/ACT/brightness"
-
 static SBUS sbus;
 
 // State variables for gear and flaps
@@ -42,7 +39,7 @@ GearState currentGear = GEAR_DOWN;  // Default to gear down
 FlapState currentFlap = FLAP_LOW;   // Default to flap low
 
 // Rudder source toggle state
-bool useStickForRudder = false;  // false = use pedals, true = use stick axis from CH8
+bool useStickForRudder = false;  // false = pedals, true = use stick axis from CH8
 
 // Store the stick axis value that would go to CH8
 int16_t stickRudderAxisValue = 0;
@@ -54,28 +51,43 @@ bool ch3Moved = false;
 bool ch4Moved = false;
 bool allChannelsMoved = false;
 
-// LED control functions
-void setLEDTrigger(const std::string& trigger) {
-    std::ofstream triggerFile(LED_TRIGGER_PATH);
-    if (triggerFile.is_open()) {
-        triggerFile << trigger;
-        triggerFile.close();
+// LED control functions - PWR is red, ACT is green
+void writeToFile(const std::string& path, const std::string& value) {
+    std::ofstream file(path);
+    if (file.is_open()) {
+        file << value;
+        file.close();
     }
 }
 
-void setLEDBrightness(int brightness) {
-    std::ofstream brightnessFile(LED_BRIGHTNESS_PATH);
-    if (brightnessFile.is_open()) {
-        brightnessFile << brightness;
-        brightnessFile.close();
-    }
+void setLEDRed() {
+    // PWR LED on (red), ACT LED off
+    writeToFile("/sys/class/leds/PWR/trigger", "none");
+    writeToFile("/sys/class/leds/PWR/brightness", "1");
+    writeToFile("/sys/class/leds/ACT/trigger", "none");
+    writeToFile("/sys/class/leds/ACT/brightness", "0");
+}
+
+void setLEDGreen() {
+    // PWR LED off, ACT LED on (green)
+    writeToFile("/sys/class/leds/PWR/trigger", "none");
+    writeToFile("/sys/class/leds/PWR/brightness", "0");
+    writeToFile("/sys/class/leds/ACT/trigger", "none");
+    writeToFile("/sys/class/leds/ACT/brightness", "1");
+}
+
+void setLEDOff() {
+    // Both LEDs off
+    writeToFile("/sys/class/leds/PWR/trigger", "none");
+    writeToFile("/sys/class/leds/PWR/brightness", "0");
+    writeToFile("/sys/class/leds/ACT/trigger", "none");
+    writeToFile("/sys/class/leds/ACT/brightness", "0");
 }
 
 void showErrorBlink() {
-    setLEDTrigger("none");
-    setLEDBrightness(1);
+    setLEDRed();
     std::this_thread::sleep_for(milliseconds(1500));
-    setLEDBrightness(0);
+    setLEDOff();
 }
 
 // Function to calculate CH5 value based on gear and flap state
@@ -152,6 +164,12 @@ uint16_t mapToSBUS(int32_t joy_value) {
     return (uint16_t)sbus_value;
 }
 
+// Map joystick value with inversion for reversed channels
+uint16_t mapToSBUSReversed(int32_t joy_value) {
+    // Invert the input value
+    return mapToSBUS(-joy_value);
+}
+
 // Check if a channel value has moved significantly from center
 bool hasMovedFromCenter(uint16_t value) {
     const uint16_t center = 992;
@@ -161,11 +179,11 @@ bool hasMovedFromCenter(uint16_t value) {
 
 int main(int argc, char **argv) {
     cout << "SBUS Dual Joystick Controller" << endl;
+    cout << "LED Control: Using PWR (red) and ACT (green) LEDs" << endl;
     cout << "Scanning for joystick devices..." << endl;
     
     // Initialize LED control
-    setLEDTrigger("none");
-    setLEDBrightness(0);
+    setLEDOff();
     
     // Find devices by name
     // Looking for "PXN PXN-F19" as stick
@@ -253,13 +271,13 @@ int main(int argc, char **argv) {
     auto lastWrite = steady_clock::now();
     auto lastPrint = steady_clock::now();
     auto lastLEDBlink = steady_clock::now();
-    int blinkCycle = 0;  // For creating different blink patterns
+    bool ledState = false;
     
     cout << "Starting SBUS transmission..." << endl;
     cout << "Initial state: Gear DOWN, Flap LOW, CH5=" << packet.channels[CH5] << endl;
     cout << "Rudder source: PEDALS (Button 6 to toggle)" << endl;
     cout << "Waiting for CH1-4 movement to initialize..." << endl;
-    cout << "LED Pattern: Fast double-blink = WAITING, Slow single-blink = READY, Long blink = ERROR" << endl;
+    cout << "LED Status: PWR (red) blink = WAITING, ACT (green) blink = READY, Long PWR (red) = ERROR" << endl;
     cout << "Press Ctrl+C to stop" << endl;
     
     while (true) {
@@ -275,7 +293,15 @@ int main(int argc, char **argv) {
                     int ch = axis;
                     if (ch >= CH4) ch += 2; // Skip channels 4 and 5
                     if (ch < 16) {
-                        uint16_t sbusValue = mapToSBUS(value);
+                        uint16_t sbusValue;
+                        
+                        // Reverse CH3 (channel index 2)
+                        if (ch == 2) {
+                            sbusValue = mapToSBUSReversed(value);
+                        } else {
+                            sbusValue = mapToSBUS(value);
+                        }
+                        
                         packet.channels[ch] = sbusValue;
                         
                         // Check for movement detection on CH1-3
@@ -288,8 +314,8 @@ int main(int argc, char **argv) {
                             stickRudderAxisValue = value;
                             // If we're using stick for rudder, update CH4
                             if (useStickForRudder) {
-                                packet.channels[CH4] = sbusValue;
-                                if (hasMovedFromCenter(sbusValue)) ch4Moved = true;
+                                packet.channels[CH4] = mapToSBUS(value);
+                                if (hasMovedFromCenter(packet.channels[CH4])) ch4Moved = true;
                             }
                         }
                         mapped = true;
@@ -341,16 +367,16 @@ int main(int argc, char **argv) {
                         stateChanged = true;
                         cout << "Flap set to HIGH" << endl;
                     }
-                    // Handle gear buttons
-                    else if (button == STICK_BTN_GEAR_DOWN) {
-                        currentGear = GEAR_DOWN;
-                        stateChanged = true;
-                        cout << "Gear set to DOWN" << endl;
-                    }
-                    else if (button == STICK_BTN_GEAR_UP) {
-                        currentGear = GEAR_UP;
+                    // Handle gear buttons - SWAPPED: button 16 now sets UP, button 17 sets DOWN
+                    else if (button == STICK_BTN_GEAR_DOWN) {  // Button 16
+                        currentGear = GEAR_UP;  // REVERSED
                         stateChanged = true;
                         cout << "Gear set to UP" << endl;
+                    }
+                    else if (button == STICK_BTN_GEAR_UP) {  // Button 17
+                        currentGear = GEAR_DOWN;  // REVERSED
+                        stateChanged = true;
+                        cout << "Gear set to DOWN" << endl;
                     }
                     else if (button != STICK_BTN_RUDDER_TOGGLE) {
                         // Unmapped button (excluding toggle button on press)
@@ -407,34 +433,24 @@ int main(int argc, char **argv) {
         if (!allChannelsMoved && ch1Moved && ch2Moved && ch3Moved && ch4Moved) {
             allChannelsMoved = true;
             cout << "All channels initialized! System ready." << endl;
-            blinkCycle = 0;  // Reset blink cycle
         }
         
-        // --- LED Blinking Logic with different patterns ---
+        // --- LED Blinking Logic ---
         auto now = steady_clock::now();
-        
-        if (!allChannelsMoved) {
-            // WAITING: Fast double-blink pattern (on-off-on-off) every 500ms
-            // This creates: 100ms ON, 100ms OFF, 100ms ON, 200ms OFF = 500ms total
-            if (now - lastLEDBlink > milliseconds(100)) {
-                lastLEDBlink = now;
-                blinkCycle++;
-                
-                if (blinkCycle == 1 || blinkCycle == 3) {
-                    setLEDBrightness(1);  // ON
-                } else if (blinkCycle == 2 || blinkCycle == 4) {
-                    setLEDBrightness(0);  // OFF
-                } else if (blinkCycle >= 5) {
-                    setLEDBrightness(0);  // OFF
-                    blinkCycle = 0;
+        if (now - lastLEDBlink > milliseconds(500)) {
+            lastLEDBlink = now;
+            ledState = !ledState;
+            
+            if (ledState) {
+                // LED ON phase
+                if (allChannelsMoved) {
+                    setLEDGreen();  // Green blink when ready
+                } else {
+                    setLEDRed();    // Red blink when waiting
                 }
-            }
-        } else {
-            // READY: Slow single-blink pattern every 500ms
-            if (now - lastLEDBlink > milliseconds(500)) {
-                lastLEDBlink = now;
-                blinkCycle = !blinkCycle;
-                setLEDBrightness(blinkCycle ? 1 : 0);
+            } else {
+                // LED OFF phase
+                setLEDOff();
             }
         }
         
@@ -467,7 +483,6 @@ int main(int argc, char **argv) {
     }
     
     // Cleanup
-    setLEDTrigger("mmc0");  // Restore default LED behavior
     close(stick_fd);
     close(pedal_fd);
     
