@@ -11,6 +11,8 @@
 #include <sys/stat.h>
 #include <SDL2/SDL.h>
 #include <SDL2/SDL_ttf.h>
+#include <mutex>
+#include <atomic>
 #include "rcdrivers/SBUS.h"
 
 using std::cout;
@@ -88,7 +90,7 @@ uint16_t htCh7Value = 992;
 // ---------------------------------------------------------------------
 static SDL_Window*   gWindow   = nullptr;
 static SDL_Renderer* gRenderer = nullptr;
-static bool sdlAvailable = false;
+static std::atomic<bool> sdlAvailable{false};
 
 static TTF_Font* gFontSmall = nullptr;  // labels / values
 static TTF_Font* gFontLarge = nullptr;  // headers
@@ -212,7 +214,7 @@ void drawSelectionChip(int x, int y, int w, int h, bool active,
 
 void renderDisplay(const sbus_packet_t& packet, bool ready, bool stickRudder,
                     GearState gear, FlapState flap, uint16_t rawThrottle, int ch8Preset,
-                    bool htActiveState) {
+                    bool htActiveState, float cpuTempC) {
     // Background
     SDL_SetRenderDrawColor(gRenderer, 16, 16, 22, 255);
     SDL_RenderClear(gRenderer);
@@ -292,6 +294,20 @@ void renderDisplay(const sbus_packet_t& packet, bool ready, bool stickRudder,
 
     // Overall status
     renderText(gFontLarge, ready ? "READY" : "WAITING", panelX, py, ready ? green : red);
+
+    // CPU temperature, top-right corner of the panel
+    {
+        char tempStr[16];
+        SDL_Color tempColor = white;
+        if (cpuTempC < 0.0f) {
+            snprintf(tempStr, sizeof(tempStr), "N/A");
+        } else {
+            snprintf(tempStr, sizeof(tempStr), "%.0fC", cpuTempC);
+            if (cpuTempC >= 75.0f) tempColor = red;
+            else if (cpuTempC >= 60.0f) tempColor = orange;
+        }
+        renderText(gFontSmall, tempStr, WINDOW_WIDTH - 40, py + 2, tempColor);
+    }
     py += 22;
 
     // --- GEAR (single box): DOWN = green, UP = red ---
@@ -409,6 +425,88 @@ void renderDisplay(const sbus_packet_t& packet, bool ready, bool stickRudder,
     }
 
     SDL_RenderPresent(gRenderer);
+}
+
+// Reads the Pi's CPU temperature in Celsius. Returns -1.0f on failure.
+// This is only ever called from the display thread - never from the
+// flight-control loop - since sysfs reads are not guaranteed to be fast.
+float readCpuTemperatureC() {
+    std::ifstream f("/sys/class/thermal/thermal_zone0/temp");
+    if (!f.is_open()) return -1.0f;
+    long milliC = 0;
+    f >> milliC;
+    if (milliC <= 0) return -1.0f;
+    return milliC / 1000.0f;
+}
+
+// ---------------------------------------------------------------------
+// Threading: the display runs entirely on its own thread so that a slow
+// SPI touchscreen flush (SDL_RenderPresent can block for 100ms+) can
+// NEVER stall the flight-control loop (joystick reads + SBUS writes).
+// The two threads only share this snapshot, protected by a mutex.
+// ---------------------------------------------------------------------
+struct DisplaySnapshot {
+    sbus_packet_t packet;
+    bool ready = false;
+    bool stickRudder = false;
+    GearState gear = GEAR_DOWN;
+    FlapState flap = FLAP_LOW;
+    uint16_t rawThrottle = 172;
+    int ch8Preset = 0;
+    bool htActiveState = false;
+};
+
+static std::mutex gSnapshotMutex;
+static DisplaySnapshot gSnapshot;
+static std::atomic<bool> gRunning{true}; // shared shutdown flag, either thread can clear it
+
+void displayThreadFunc() {
+    sdlAvailable = initDisplay();
+    if (!sdlAvailable) {
+        cout << "SDL2 display unavailable, continuing headless." << endl;
+        return;
+    }
+    cout << "SDL2 display initialized (on its own thread)." << endl;
+
+    auto lastRender = steady_clock::now();
+    auto lastTempRead = steady_clock::now();
+    float cpuTempC = readCpuTemperatureC();
+
+    while (gRunning.load()) {
+        if (!pollDisplayEvents()) {
+            gRunning = false;
+            break;
+        }
+
+        auto now = steady_clock::now();
+
+        // Re-read CPU temp at most once a second - no need for it to be
+        // tied to render cadence, and it keeps file I/O off the hot path.
+        if (now - lastTempRead > milliseconds(1000)) {
+            lastTempRead = now;
+            cpuTempC = readCpuTemperatureC();
+        }
+
+        if (now - lastRender > milliseconds(33)) {
+            lastRender = now;
+
+            DisplaySnapshot snap;
+            {
+                std::lock_guard<std::mutex> lock(gSnapshotMutex);
+                snap = gSnapshot;
+            }
+
+            renderDisplay(snap.packet, snap.ready, snap.stickRudder, snap.gear, snap.flap,
+                          snap.rawThrottle, snap.ch8Preset, snap.htActiveState, cpuTempC);
+        }
+
+        // However long SDL_RenderPresent() actually took (even 150ms+ on a
+        // slow SPI panel), it only ever delays the NEXT frame on this
+        // thread - the control loop on the main thread is unaffected.
+        std::this_thread::sleep_for(milliseconds(5));
+    }
+
+    closeDisplay();
 }
 
 // ---------------------------------------------------------------------
@@ -547,14 +645,12 @@ int main(int argc, char **argv) {
     // Initialize LED control
     setLEDOff();
 
-    // Initialize SDL2 display (non-fatal if it fails - just runs headless)
-    sdlAvailable = initDisplay();
-    if (sdlAvailable) {
-        cout << "SDL2 display initialized." << endl;
-    } else {
-        cout << "SDL2 display unavailable, continuing headless." << endl;
-    }
-    
+    // Display runs entirely on its own thread (SDL init, event pump, and
+    // rendering all happen there) so a slow display can never stall the
+    // flight-control loop below. Non-fatal if SDL/the display isn't
+    // available - the thread just exits early and we run headless.
+    std::thread displayThread(displayThreadFunc);
+
     // Find devices by name
     // Looking for "PXN PXN-F19" as stick
     std::string stickDev = findDeviceByName("pxn-f19");
@@ -575,7 +671,8 @@ int main(int argc, char **argv) {
         cerr << "Error: Could not find PXN-F19 joystick device" << endl;
         cerr << "Please check that your PXN-F19 joystick is connected" << endl;
         showErrorBlink();
-        if (sdlAvailable) closeDisplay();
+        gRunning = false;
+        if (displayThread.joinable()) displayThread.join();
         return 1;
     }
     
@@ -583,7 +680,8 @@ int main(int argc, char **argv) {
         cerr << "Error: Could not find Saitek Pro Flight Rudder Pedals device" << endl;
         cerr << "Please check that your Saitek pedals are connected" << endl;
         showErrorBlink();
-        if (sdlAvailable) closeDisplay();
+        gRunning = false;
+        if (displayThread.joinable()) displayThread.join();
         return 1;
     }
     
@@ -599,7 +697,8 @@ int main(int argc, char **argv) {
     if (err != RCDRIVERS_OK) {
         cerr << "SBUS install error: " << err << endl;
         showErrorBlink();
-        if (sdlAvailable) closeDisplay();
+        gRunning = false;
+        if (displayThread.joinable()) displayThread.join();
         return err;
     }
     cout << "SBUS installed successfully" << endl;
@@ -611,14 +710,16 @@ int main(int argc, char **argv) {
     if (stick_fd < 0) {
         cerr << "Failed to open stick: " << stickDev << endl;
         showErrorBlink();
-        if (sdlAvailable) closeDisplay();
+        gRunning = false;
+        if (displayThread.joinable()) displayThread.join();
         return 1;
     }
     if (pedal_fd < 0) {
         cerr << "Failed to open pedals: " << pedalDev << endl;
         close(stick_fd);
         showErrorBlink();
-        if (sdlAvailable) closeDisplay();
+        gRunning = false;
+        if (displayThread.joinable()) displayThread.join();
         return 1;
     }
     
@@ -655,7 +756,6 @@ int main(int argc, char **argv) {
     auto lastGoodWrite = steady_clock::now();
     auto lastPrint = steady_clock::now();
     auto lastLEDBlink = steady_clock::now();
-    auto lastRender = steady_clock::now();
     unsigned long sbusErrorCount = 0;
     bool ledState = false;
     
@@ -666,16 +766,7 @@ int main(int argc, char **argv) {
     cout << "LED Status: PWR (red) blink = WAITING, ACT (green) blink = READY, Long PWR (red) = ERROR" << endl;
     cout << "Press Ctrl+C to stop (or close the SDL window / press Esc / Q)" << endl;
     
-    bool running = true;
-    while (running) {
-
-        // --- SDL event pump (close window / Esc / Q to quit) ---
-        if (sdlAvailable) {
-            if (!pollDisplayEvents()) {
-                running = false;
-                break;
-            }
-        }
+    while (gRunning.load()) {
 
         // --- Read Stick Events ---
         while (read(stick_fd, &e, sizeof(e)) > 0) {
@@ -954,10 +1045,21 @@ int main(int argc, char **argv) {
             }
         }
 
-        // --- Update SDL display at ~30 FPS ---
-        if (sdlAvailable && (now - lastRender > milliseconds(33))) {
-            lastRender = now;
-            renderDisplay(packet, allChannelsMoved, useStickForRudder, currentGear, currentFlap, rawThrottleValue, ch8PresetIndex, htActive);
+        // --- Publish state for the display thread (does NOT render here) ---
+        // This is a quick, bounded copy under a mutex - nowhere near slow
+        // enough to threaten the 14ms SBUS cadence. The display thread picks
+        // this up on its own schedule and does all the (potentially slow)
+        // rendering independently, on its own thread.
+        if (sdlAvailable) {
+            std::lock_guard<std::mutex> lock(gSnapshotMutex);
+            gSnapshot.packet        = packet;
+            gSnapshot.ready         = allChannelsMoved;
+            gSnapshot.stickRudder   = useStickForRudder;
+            gSnapshot.gear          = currentGear;
+            gSnapshot.flap          = currentFlap;
+            gSnapshot.rawThrottle   = rawThrottleValue;
+            gSnapshot.ch8Preset     = ch8PresetIndex;
+            gSnapshot.htActiveState = htActive;
         }
         
         // --- Print channel values every second ---
@@ -980,7 +1082,12 @@ int main(int argc, char **argv) {
     // Cleanup
     close(stick_fd);
     close(pedal_fd);
-    if (sdlAvailable) closeDisplay();
+
+    // Tell the display thread to stop (in case the loop exited for a reason
+    // other than the user closing the window) and wait for it to clean up
+    // SDL on its own thread.
+    gRunning = false;
+    if (displayThread.joinable()) displayThread.join();
     
     return 0;
 }
